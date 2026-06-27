@@ -1,38 +1,86 @@
-"""Quantum services wrapper (ports 9126-9129)."""
+"""Quantum services wrapper (ports 9126-9129).
+
+This module wraps four related quantum microservices:
+
+| Service              | Port | Endpoints                      |
+|----------------------|------|--------------------------------|
+| Quantum Router       | 9126 | /route, /health                |
+| Self-Scaler          | 9127 | /topology                      |
+| Entanglement Tracker | 9128 | /observe, /entanglement        |
+| Quantum Circuit      | 9129 | /decide                        |
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
 from .base import ServiceBase
 
+
 class Quantum(ServiceBase):
-    """Wraps quantum router (9126), self-scaler (9127), entanglement tracker (9128), quantum circuit (9129)."""
-    def __init__(self, host="localhost", router=9126, scaler=9127, entanglement=9128, circuit=9129):
-        self.router_url = f"http://{host}:{router}"
-        self.scaler_url = f"http://{host}:{scaler}"
-        self.entanglement_url = f"http://{host}:{entanglement}"
-        self.circuit_url = f"http://{host}:{circuit}"
-        self.base_url = self.router_url
+    """Client for the EVEZ Quantum services cluster (router, scaler, entanglement, circuit)."""
 
-    def route(self, from_node: str, to_node: str) -> dict:
-        """Get quantum-routed path between nodes."""
-        return self._get(f"{self.router_url}/route?from={from_node}&to={to_node}")
+    def __init__(self, host: str = "localhost", router: int = 9126,
+                 scaler: int = 9127, entanglement: int = 9128,
+                 circuit: int = 9129, **kwargs) -> None:
+        super().__init__(host=host, port=router, **kwargs)
+        self._router_url = f"http://{host}:{router}"
+        self._scaler_url = f"http://{host}:{scaler}"
+        self._entanglement_url = f"http://{host}:{entanglement}"
+        self._circuit_url = f"http://{host}:{circuit}"
 
-    def decide(self, options: list, context: str = "") -> dict:
-        """Get a quantum-accelerated decision."""
-        import json as _json, urllib.request
-        data = _json.dumps({"options": options, "context": context}).encode()
-        req = urllib.request.Request(f"{self.circuit_url}/decide", data=data,
-                                     headers={"Content-Type": "application/json"})
-        return _json.loads(urllib.request.urlopen(req, timeout=10).read())
+    def _with_base(self, base_url: str):
+        """Context helper: temporarily switch base_url."""
+        class _SwitchedBase:
+            def __init__(inner):
+                inner._old = self.base_url
+                self.base_url = base_url
+            def __enter__(inner): return self
+            def __exit__(inner, *_):
+                self.base_url = inner._old
+        return _SwitchedBase()
 
-    def observe_entanglement(self, node_id: str, status: int = 1) -> dict:
-        """Feed an observation to the entanglement tracker."""
-        return self._post(f"{self.entanglement_url}/observe", {"node_id": node_id, "status": status})
+    def route(self, from_node: str, to_node: str) -> Dict[str, Any]:
+        """Get quantum-routed path between nodes.
 
-    def topology(self) -> dict:
+        Args:
+            from_node: Source node identifier.
+            to_node: Destination node identifier.
+        """
+        return self._get(f"/route?from={from_node}&to={to_node}")
+
+    def decide(self, options: List[str], context: str = "") -> Dict[str, Any]:
+        """Get a quantum-accelerated decision via the circuit service.
+
+        Args:
+            options: List of decision options.
+            context: Optional context string.
+        """
+        with self._with_base(self._circuit_url):
+            return self._post("/decide", {"options": options, "context": context},
+                              timeout=10)
+
+    def observe_entanglement(self, node_id: str,
+                             status: int = 1) -> Dict[str, Any]:
+        """Feed an observation to the entanglement tracker.
+
+        Args:
+            node_id: Node to observe.
+            status: Observation status code.
+        """
+        with self._with_base(self._entanglement_url):
+            return self._post("/observe", {"node_id": node_id, "status": status})
+
+    def topology(self) -> Dict[str, Any]:
         """Get self-scaler topology."""
-        return self._get(f"{self.scaler_url}/topology")
+        with self._with_base(self._scaler_url):
+            return self._get("/topology")
 
-    def entanglement_pairs(self) -> dict:
+    def entanglement_pairs(self) -> Dict[str, Any]:
         """Get current entangled pairs."""
-        return self._get(f"{self.entanglement_url}/entanglement")
+        with self._with_base(self._entanglement_url):
+            return self._get("/entanglement")
 
-    def health(self) -> dict:
-        return self._get(f"{self.router_url}/health")
+    def health(self) -> Dict[str, Any]:
+        """Check quantum router health."""
+        with self._with_base(self._router_url):
+            return self._get("/health")
